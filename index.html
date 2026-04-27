@@ -1194,7 +1194,7 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
   useEffect(()=>{tradeRef.current=trade; canvasRef.current?.__markDirty?.();},[trade]);
   useEffect(()=>{lpRef.current=livePrice; canvasRef.current?.__markDirty?.();},[livePrice]);
 
-  const CW=9,BW=6,LW=56,RW=68; // candle width, body width, left axis, right axis
+  const CW=9,BW=6,LW=4,RW=72; // candle width, body width, minimal left margin, right axis panel
 
   useEffect(()=>{
     const canvas=canvasRef.current;
@@ -1202,12 +1202,13 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
     if(!canvas||!container)return;
 
     // ── Resize canvas to match container (DPR-aware for crisp rendering) ──
-    let W=container.clientWidth, H=height;
+    let W=container.clientWidth, H=container.clientHeight||height;
     let _rzTimer;
     let _dirty=true; // declared here so resize() can set it safely
     const resize=()=>{
       const dpr=window.devicePixelRatio||1;
       W=container.clientWidth;
+      H=container.clientHeight||height;
       canvas.width=W*dpr; canvas.height=H*dpr;
       canvas.style.width=W+'px'; canvas.style.height=H+'px';
       _dirty=true;
@@ -1220,14 +1221,20 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
     const onTS=e=>{draggingRef.current=true;autoScrollRef.current=false;touchXRef.current=e.touches[0].clientX;};
     const onTM=e=>{
       if(!draggingRef.current)return;
-      const dx=touchXRef.current-e.touches[0].clientX;
+      // Natural MT5 scroll: drag right = see older candles (scroll increases)
+      // drag left = see newer candles (scroll decreases toward 0 = latest)
+      const dx=e.touches[0].clientX-touchXRef.current;
       touchXRef.current=e.touches[0].clientX;
-      scrollRef.current=Math.max(0,scrollRef.current+dx/CW);
+      scrollRef.current=Math.max(0,scrollRef.current-dx/CW);
+      _dirty=true;
     };
     const onTE=()=>{draggingRef.current=false;if(scrollRef.current<0.5){autoScrollRef.current=true;scrollRef.current=0;}};
     const onWh=e=>{
-      scrollRef.current=Math.max(0,scrollRef.current+e.deltaX/CW);
+      // deltaX positive = scroll right (newer) = decrease scrollRef toward 0
+      // deltaX negative = scroll left (older) = increase scrollRef
+      scrollRef.current=Math.max(0,scrollRef.current-e.deltaX/CW);
       autoScrollRef.current=scrollRef.current<0.5;
+      _dirty=true;
     };
     canvas.addEventListener('touchstart',onTS,{passive:true});
     canvas.addEventListener('touchmove',onTM,{passive:true});
@@ -1286,30 +1293,50 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
       const startIdx=Math.max(0,endIdx-visCount);
       const vis=allVis.slice(startIdx,endIdx);
 
-      // ── Price range ──
+      // ── Price range — include trade lines so they never push candles off screen ──
       const pp=[];
       vis.forEach(c=>{pp.push(c.high,c.low);});
       if(lp>0)pp.push(lp);
-      if(tr){[tr.entry,tr.sl,tr.tp1,tr.tp2,tr.tp3].forEach(v=>{if(v!=null)pp.push(v);});}
+      // Only include trade lines in range if they're within 10× the candle range
+      const candLo=vis.length?Math.min(...vis.map(c=>c.low)):0;
+      const candHi=vis.length?Math.max(...vis.map(c=>c.high)):0;
+      const candRng=Math.max(candHi-candLo,1);
+      if(tr){[tr.entry,tr.sl,tr.tp1,tr.tp2,tr.tp3].forEach(v=>{
+        if(v!=null&&v>candLo-candRng*3&&v<candHi+candRng*3)pp.push(v);
+      });}
       if(!pp.length){rafRef.current=requestAnimationFrame(draw);return;}
       const rawLo=Math.min(...pp),rawHi=Math.max(...pp);
-      const mgn=Math.max((rawHi-rawLo)*0.15,2);
+      const mgn=Math.max((rawHi-rawLo)*0.12,1.5);
       const lo=rawLo-mgn,hi=rawHi+mgn,rng=hi-lo||1;
       const py=p=>pad.t+((hi-p)/rng)*(H-pad.t-pad.b);
       const pyC=p=>Math.max(pad.t+1,Math.min(H-pad.b-1,py(p)));
       const px=i=>pad.l+(i+0.5)*CW;
 
-      // ── Grid ──
+      // ── Right axis background panel (MT5-style) ──
+      ctx.fillStyle='#0d0d11';
+      ctx.fillRect(W-pad.r,0,pad.r,H);
+      ctx.strokeStyle=BDR;ctx.lineWidth=1;ctx.globalAlpha=0.7;
+      ctx.beginPath();ctx.moveTo(W-pad.r,pad.t);ctx.lineTo(W-pad.r,H-pad.b);ctx.stroke();
+      ctx.globalAlpha=1;
+
+      // ── Grid lines + RIGHT axis price labels (MT5-style) ──
       const rawStep=(hi-lo)/6;
       const mag=Math.pow(10,Math.floor(Math.log10(rawStep)));
       const step=Math.ceil(rawStep/mag)*mag||1;
       ctx.font='7px "JetBrains Mono",monospace';
-      ctx.textAlign='right';
       for(let p=Math.ceil(lo/step)*step;p<=hi;p=+(p+step).toFixed(2)){
         const y=py(p);if(y<pad.t-2||y>H-pad.b+2)continue;
-        ctx.strokeStyle=BDR;ctx.lineWidth=0.5;ctx.globalAlpha=0.6;
+        // Horizontal grid line (chart area only)
+        ctx.strokeStyle=BDR;ctx.lineWidth=0.5;ctx.globalAlpha=0.5;
         ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
-        ctx.globalAlpha=1;ctx.fillStyle=DM;ctx.fillText(p.toFixed(2),pad.l-4,y+2.5);
+        ctx.globalAlpha=1;
+        // Right-axis tick mark
+        ctx.strokeStyle=DM;ctx.lineWidth=0.8;ctx.globalAlpha=0.6;
+        ctx.beginPath();ctx.moveTo(W-pad.r,y);ctx.lineTo(W-pad.r+3,y);ctx.stroke();
+        ctx.globalAlpha=1;
+        // Price label on right side — MT5 style
+        ctx.fillStyle=DM;ctx.textAlign='left';
+        ctx.fillText(p.toFixed(2),W-pad.r+5,y+2.5);
       }
 
       // ── Day boundaries ──
@@ -1338,25 +1365,29 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
       });
       ctx.setLineDash([]);
 
-      // ── Trade lines ──
+      // ── Trade lines — thin dashed, labels on right axis only, don't cover candles ──
       const tLine=(price,col,lbl,dashed)=>{
         if(price==null)return;
         const yRaw=py(price),clamped=yRaw<pad.t+1||yRaw>H-pad.b-1;
         const y=pyC(price),arr=clamped?(yRaw<pad.t+1?'▲':'▼'):'';
-        ctx.strokeStyle=col;ctx.lineWidth=clamped?0.8:1;
-        ctx.globalAlpha=clamped?0.35:0.90;
-        ctx.setLineDash(clamped?[2,4]:dashed?[4,3]:[]);
+        // Draw a thin dashed line across chart area only (not over candles — low alpha)
+        ctx.strokeStyle=col;ctx.lineWidth=clamped?0.6:0.9;
+        ctx.globalAlpha=clamped?0.25:0.55;
+        ctx.setLineDash(dashed?[5,4]:[3,3]);
         ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
         ctx.setLineDash([]);ctx.globalAlpha=1;
-        ctx.fillStyle=col;ctx.globalAlpha=clamped?0.50:0.88;
-        rrect(ctx,W-pad.r+1,y-7,RW-4,14,1);ctx.fill();ctx.globalAlpha=1;
-        ctx.fillStyle='#000';ctx.font='700 6px "JetBrains Mono",monospace';
-        ctx.textAlign='left';ctx.fillText(`${lbl}${arr} ${(+price).toFixed(2)}`,W-pad.r+3,y+2);
+        // Right-axis label only — compact, sits flush on right panel
+        ctx.fillStyle=col;ctx.globalAlpha=clamped?0.60:0.92;
+        rrect(ctx,W-pad.r+1,y-7,RW-4,14,2);ctx.fill();ctx.globalAlpha=1;
+        ctx.fillStyle='#000';ctx.font='bold 6px "JetBrains Mono",monospace';
+        ctx.textAlign='left';
+        const shortLbl=lbl.replace('✓','');
+        ctx.fillText(`${shortLbl}${arr} ${(+price).toFixed(2)}`,W-pad.r+3,y+2.5);
       };
       if(tr){
-        tLine(tr.tp3,'#A5D6A7',tr.p3Done?'TP3✓':'TP3',true);
-        tLine(tr.tp2,'#66BB6A',tr.p2Done?'TP2✓':'TP2',true);
-        tLine(tr.tp1,'#4CAF50',tr.p1Done?'TP1✓':'TP1',true);
+        tLine(tr.tp3,'#81C784',tr.p3Done?'TP3✓':'TP3',true);
+        tLine(tr.tp2,'#4CAF50',tr.p2Done?'TP2✓':'TP2',true);
+        tLine(tr.tp1,'#2E7D32',tr.p1Done?'TP1✓':'TP1',true);
         tLine(tr.sl,tr.trailing?'#FFC107':'#FF3B30',tr.trailing?'TRAIL':'SL',false);
         tLine(tr.entry,tr.dir==='BUY'?'#2196F3':'#F44336',tr.dir==='BUY'?'BUY':'SELL',false);
       }
@@ -1366,16 +1397,20 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
         const x=px(i);
         const bull=c.bull!==undefined?c.bull:c.close>=c.open;
         const col=bull?GRN:RED,isLive=c.forming===true;
-        const yH=py(c.high),yL=py(c.low),yO=py(c.open),yC2=py(c.close);
+        // Clamp all y values strictly within chart area
+        const yH=Math.max(pad.t,py(c.high));
+        const yL=Math.min(H-pad.b,py(c.low));
+        const yO=Math.max(pad.t,Math.min(H-pad.b,py(c.open)));
+        const yC2=Math.max(pad.t,Math.min(H-pad.b,py(c.close)));
         const bTop=Math.min(yO,yC2),bH=Math.max(Math.abs(yO-yC2),1.5);
         ctx.globalAlpha=isLive?0.65:0.95;
-        // Wick
+        // Wick — clipped to chart area
         ctx.strokeStyle=col;ctx.lineWidth=1.2;ctx.setLineDash([]);
-        ctx.beginPath();ctx.moveTo(x,yH);ctx.lineTo(x,yL);ctx.stroke();
-        // Body
-        ctx.fillStyle=isLive?col+'66':col;
-        ctx.fillRect(x-BW/2,bTop,BW,bH);
-        if(isLive){ctx.strokeStyle=col;ctx.lineWidth=0.8;ctx.strokeRect(x-BW/2,bTop,BW,bH);}
+        ctx.beginPath();ctx.moveTo(x,Math.max(pad.t,yH));ctx.lineTo(x,Math.min(H-pad.b,yL));ctx.stroke();
+        // Body — fully filled: bull=green, bear=red
+        ctx.fillStyle=isLive?col+'88':col;
+        ctx.fillRect(x-BW/2,Math.max(pad.t,bTop),BW,Math.min(bH,H-pad.b-Math.max(pad.t,bTop)));
+        if(isLive){ctx.strokeStyle=col;ctx.lineWidth=0.8;ctx.strokeRect(x-BW/2,Math.max(pad.t,bTop),BW,Math.min(bH,H-pad.b-Math.max(pad.t,bTop)));}
         // Live forming bar indicator
         if(isLive){
           ctx.globalAlpha=0.25;ctx.strokeStyle=col;ctx.lineWidth=0.5;
@@ -1411,11 +1446,6 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
         ctx.textAlign='left';ctx.fillText(lp.toFixed(2),W-pad.r+3,ly+2);
       }
 
-      // ── Right axis separator ──
-      ctx.strokeStyle=BDR;ctx.lineWidth=1;ctx.globalAlpha=0.5;
-      ctx.beginPath();ctx.moveTo(W-pad.r,pad.t);ctx.lineTo(W-pad.r,H-pad.b);ctx.stroke();
-      ctx.globalAlpha=1;
-
       rafRef.current=requestAnimationFrame(draw);
     }
 
@@ -1436,7 +1466,7 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
   const visN=candles[candles.length-1];
 
   return(
-    <div style={{borderRadius:"10px",border:`1px solid ${BORDER}`,overflow:"hidden",background:"#0a0a0e",display:"flex",flexDirection:"column"}}>
+    <div style={{borderRadius:"10px",border:`1px solid ${BORDER}`,overflow:"hidden",background:"#0a0a0e",display:"flex",flexDirection:"column",height:"100%"}}>
       {/* Header */}
       <div style={{display:"flex",gap:"8px",padding:"5px 10px",borderBottom:`1px solid ${BORDER}22`,
         alignItems:"center",flexShrink:0,background:"#0c0c10"}}>
@@ -1449,9 +1479,9 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
           {candles.length} bars · ←drag→
         </span>
       </div>
-      {/* Canvas — full width, touch-scrollable */}
-      <div ref={containerRef} style={{width:"100%",flexShrink:0,touchAction:"none"}}>
-        <canvas ref={canvasRef} style={{display:"block",touchAction:"none"}}/>
+      {/* Canvas — fills all available space */}
+      <div ref={containerRef} style={{flex:1,minHeight:0,position:"relative",touchAction:"none"}}>
+        <canvas ref={canvasRef} style={{display:"block",position:"absolute",top:0,left:0,touchAction:"none"}}/>
       </div>
       {/* Footer */}
       <div style={{display:"flex",gap:"8px",padding:"3px 10px",borderTop:`1px solid ${BORDER}22`,
@@ -1469,6 +1499,28 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
 
 // ── Memoize Chart to skip re-renders when parent state changes unrelated to chart ──
 const MemoChart=React.memo(Chart);
+
+// ── ChartFill: fills its flex parent and passes measured height into Chart ──
+function ChartFill(props){
+  const wrapRef=useRef(null);
+  const [h,setH]=useState(320);
+  useEffect(()=>{
+    if(!wrapRef.current)return;
+    const ro=new ResizeObserver(entries=>{
+      for(const e of entries){const ch=Math.floor(e.contentRect.height);if(ch>50)setH(ch);}
+    });
+    ro.observe(wrapRef.current);
+    // Initial measure
+    const initial=wrapRef.current.clientHeight;
+    if(initial>50)setH(initial);
+    return()=>ro.disconnect();
+  },[]);
+  return(
+    <div ref={wrapRef} style={{flex:1,minHeight:0,height:"100%"}}>
+      <MemoChart {...props} height={h}/>
+    </div>
+  );
+}
 
 // ── EQUITY CURVE ───────────────────────────────────────────────────
 const EquityCurve=React.memo(function EquityCurve({hist,startBal}){
@@ -2876,15 +2928,6 @@ function App(){
         /* Chart tab — fixed layout, chart never shifts */
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"6px 10px",gap:"4px"}}>
 
-          {/* Live feed status bar */}
-          <div style={{flexShrink:0,background:PANEL,borderRadius:"6px",border:`1px solid ${running?RED+"40":BORDER}`,padding:"6px 10px",display:"flex",gap:"8px",alignItems:"center"}}>
-            <span style={{fontSize:"8px",color:running?RED:DIM,animation:running?"blink 1.5s infinite":"none"}}>●</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:"9px",color:running?RED:DIM,fontWeight:"600",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{liveStatus||(running?"Connecting...":"Live feed inactive")}</div>
-            </div>
-            <div style={{fontSize:"8px",color:GREEN,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,fontWeight:"700"}}>DERIV ✅</div>
-          </div>
-
           {/* START button — shown when not running */}
           {!running&&(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"16px"}}>
@@ -2900,8 +2943,8 @@ function App(){
             </div>
           )}
 
-          {/* Trade bar + Chart — shown when running */}
-          {running&&(<>
+      {/* Trade bar + Chart — shown when running */}
+      {running&&(<>
             <div style={{flexShrink:0,minHeight:"22px"}}>
               {trade&&(
                 <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"3px 8px",
@@ -2922,8 +2965,8 @@ function App(){
                 </div>
               )}
             </div>
-            <div style={{flex:1,minHeight:0}}>
-              <MemoChart candles={candles} trade={trade} livePrice={livePrice} height={360} replayIdx={null} rLiveCandles={rLiveCandles}/>
+            <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column"}}>
+              <ChartFill candles={candles} trade={trade} livePrice={livePrice} replayIdx={null} rLiveCandles={rLiveCandles}/>
             </div>
           </>)}
         </div>
