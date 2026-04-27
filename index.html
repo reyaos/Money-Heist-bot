@@ -1010,41 +1010,43 @@ function manageTrade(t, price, atr, liveProvider, pip=10){
     tr.lowWater=tr.lowWater!=null?Math.min(tr.lowWater,price):price;
   }
 
-  // ── NEW TRAILING STOP LOGIC ──────────────────────────────────────
-  // Step 1: Trail does NOT activate until price moves 35% of SL distance
-  //         in the trade direction from entry.
-  //         e.g. BUY entry=2000, slD=10 → trail activates at 2000+(10*0.35)=2003.50
-  // Step 2: When activated, SL snaps to entry (Break Even) first.
-  // Step 3: After BE, SL follows price maintaining 30% of the entry→price distance.
-  //         trailSL = price - (price - entry) * 0.30  [BUY]
-  //         trailSL = price + (entry - price) * 0.30  [SELL]
-  //         This means the trail gap grows as price moves further — locks more profit.
-  // SL only ever moves in the profitable direction (ratchet).
+  // ── TRAILING STOP LOGIC ──────────────────────────────────────────
+  // Activation : price moves 50% of original SL distance from entry
+  // Step 1 BE  : on activation SL snaps to entry (Break Even) immediately
+  // Step 2 Trail: SL follows price maintaining a 40% gap of the
+  //               entry→currentPrice move (ratchet — only moves in profit dir)
+  //   BUY  trailSL = price − (price − entry) × 0.40
+  //   SELL trailSL = price + (entry − price) × 0.40
+  // SL never moves against the trade (ratchet).
 
   const slD=tr.slD||Math.abs(tr.entry-tr.sl)||2.0;
-  const activationDist=slD*0.35;// 35% of SL distance
+  const activationDist=slD*0.50;   // 50% of original SL distance
 
   if(tr.dir==="BUY"){
     const moved=price-tr.entry;
     if(moved>=activationDist){
       tr.trailing=true;
-      // Trail = price minus 30% of total move from entry
-      const trailGap=(price-tr.entry)*0.30;
-      const newSL=+(price-Math.max(trailGap, 0.01)).toFixed(2);
-      // BE floor: never go below entry once trail activated
+      // BE floor — always guaranteed once trail active
       const beFloor=tr.entry;
-      if(newSL>tr.sl){tr.sl=Math.max(newSL,beFloor);}
-      else if(tr.sl<beFloor){tr.sl=beFloor;}// snap to BE immediately on activation
+      // Trail gap = 40% of total move from entry to current price
+      const trailGap=Math.max((price-tr.entry)*0.40, 0.01);
+      const newSL=+(price-trailGap).toFixed(2);
+      // Ratchet: only ever move SL upward (toward profit)
+      const candidate=Math.max(newSL, beFloor);
+      if(candidate>tr.sl) tr.sl=candidate;
+      // Snap to BE immediately on first activation if not already there
+      else if(tr.sl<beFloor) tr.sl=beFloor;
     }
   }else{
     const moved=tr.entry-price;
     if(moved>=activationDist){
       tr.trailing=true;
-      const trailGap=(tr.entry-price)*0.30;
-      const newSL=+(price+Math.max(trailGap, 0.01)).toFixed(2);
       const beFloor=tr.entry;
-      if(newSL<tr.sl){tr.sl=Math.min(newSL,beFloor);}
-      else if(tr.sl>beFloor){tr.sl=beFloor;}
+      const trailGap=Math.max((tr.entry-price)*0.40, 0.01);
+      const newSL=+(price+trailGap).toFixed(2);
+      const candidate=Math.min(newSL, beFloor);
+      if(candidate<tr.sl) tr.sl=candidate;
+      else if(tr.sl>beFloor) tr.sl=beFloor;
     }
   }
 
@@ -1286,19 +1288,38 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
 
       const pad={t:12,b:24,l:LW,r:RW};
       const chartW=W-pad.l-pad.r;
-      // Reserve ~15% of chart width as empty space to the right of latest candle (MT5 style)
+
+      // ── MT5-style rendering ──────────────────────────────────────
+      // The right edge of the candle area is always fixed at W-pad.r.
+      // scrollRef = how many candle-widths the view is shifted left from the live edge.
+      // rightGapCandles = empty space to the right of the latest visible candle.
+      // Latest candle always renders at the same x position; scrolling adds
+      // candles to the right of the view (older candles appear to the left).
       const rightGapCandles=Math.max(3,Math.floor(chartW*0.15/CW));
-      const visCount=Math.max(1,Math.floor(chartW/CW)-rightGapCandles);
+      // Total candle slots visible in chart area
+      const totalSlots=Math.floor(chartW/CW);
+      // The "anchor" slot index (0-based from left) where the latest candle sits
+      // = totalSlots - rightGapCandles - 1  (leave rightGap empty to the right)
+      const anchorSlot=totalSlots-rightGapCandles-1;
+
       const scrolled=Math.floor(scrollRef.current);
+      // endIdx: which allVis index is the latest candle shown
+      // (scrolled=0 → latest candle; scrolled=N → N candles back from latest)
       const endIdx=Math.max(0,allVis.length-scrolled);
-      const startIdx=Math.max(0,endIdx-visCount);
+      // How many candles fit to the left of the anchor slot
+      const startIdx=Math.max(0,endIdx-(anchorSlot+1));
       const vis=allVis.slice(startIdx,endIdx);
+
+      // px maps vis-array index i to canvas x, anchored so that
+      // the last element in vis lands on the anchor slot.
+      // slot of vis[i] = anchorSlot - (vis.length-1-i)
+      const px=i=>pad.l+(anchorSlot-(vis.length-1-i)+0.5)*CW;
 
       // ── Price range — include trade lines so they never push candles off screen ──
       const pp=[];
       vis.forEach(c=>{pp.push(c.high,c.low);});
       if(lp>0)pp.push(lp);
-      // Only include trade lines in range if they're within 10× the candle range
+      // Only include trade lines in range if they're within 3× candle range
       const candLo=vis.length?Math.min(...vis.map(c=>c.low)):0;
       const candHi=vis.length?Math.max(...vis.map(c=>c.high)):0;
       const candRng=Math.max(candHi-candLo,1);
@@ -1311,7 +1332,6 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
       const lo=rawLo-mgn,hi=rawHi+mgn,rng=hi-lo||1;
       const py=p=>pad.t+((hi-p)/rng)*(H-pad.t-pad.b);
       const pyC=p=>Math.max(pad.t+1,Math.min(H-pad.b-1,py(p)));
-      const px=i=>pad.l+(i+0.5)*CW;
 
       // ── Right axis background panel (MT5-style) ──
       ctx.fillStyle='#0d0d11';
@@ -1396,6 +1416,8 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
       // ── Candles ──
       vis.forEach((c,i)=>{
         const x=px(i);
+        // Skip candles outside the visible chart area (can happen when scrolled far)
+        if(x+BW/2<pad.l||x-BW/2>W-pad.r) return;
         const bull=c.bull!==undefined?c.bull:c.close>=c.open;
         const col=bull?GRN:RED,isLive=c.forming===true;
         // Clamp all y values strictly within chart area
@@ -2625,6 +2647,46 @@ function App(){
           rBalance.current=+(rBalance.current+pnl).toFixed(2);
           rStats.current={...rStats.current,pnl:+(rStats.current.pnl+pnl).toFixed(2)};
           setStats({...rStats.current});setBalance(rBalance.current);setTrade({...rTrade.current});
+
+          // ── TP1 HIT: try to add a new position if signal agrees ──────
+          // Only open trade2 once (when TP1 just hit), no existing trade2, and
+          // at least 2 strategy votes agree in the same direction.
+          if(tickExit.result==="TP1"&&!rTrade2.current){
+            const cs2=rLiveCandles.current.slice(-100);
+            const atr2=rCachedATR.current||calcATR(cs2);
+            const spread2=rSpread.current||0.30;
+            const hour2=new Date().getUTCHours()+(new Date().getUTCMinutes()/60);
+            // Quick vote count — same direction as current trade
+            const dir2=t.dir;
+            const strategies2=[
+              s_Impulse(cs2,atr2),s_Trend(cs2,atr2),s_FVG(cs2),
+              s_Pattern(cs2),s_CHoCH(cs2,atr2),s_OB(cs2,atr2),
+              s_Sweep(cs2,atr2),s_InsideBar(cs2,atr2),s_MomentumContinuation(cs2,atr2),
+            ];
+            const votes2=strategies2.filter(s=>s&&s.dir===dir2).length;
+            if(votes2>=2){
+              // Build fresh SL/TP from current price
+              const entry2=+price.toFixed(2);
+              const {sl:sl2,slD:slD2}=calcHFTSL({
+                cs:cs2,dir:dir2,entry:entry2,atr:atr2,spread:spread2,
+                hourGMT:hour2,balance:rBalance.current,inst:rInstrument.current});
+              const tp1_2=+snapTP(dir2==="BUY"?entry2+slD2*1.5:entry2-slD2*1.5,dir2).toFixed(2);
+              const tp2_2=+snapTP(dir2==="BUY"?entry2+slD2*3.0:entry2-slD2*3.0,dir2).toFixed(2);
+              const tp3_2=+(dir2==="BUY"?entry2+slD2*6.0:entry2-slD2*6.0).toFixed(2);
+              const rawLots2=getLotSize(rBalance.current,"BALANCED",slD2);
+              const lots2=+Math.min(Math.max(rawLots2,MIN_LOT),MAX_LOT_NORMAL).toFixed(4);
+              rTrade2.current={
+                dir:dir2,entry:entry2,sl:sl2,tp1:tp1_2,tp2:tp2_2,tp3:tp3_2,
+                slD:slD2,lots:lots2,strength:60,confirms:`TP1-ADD votes:${votes2}`,
+                pnl:0,p1Done:false,p2Done:false,p3Done:false,
+                beDone:false,trailing:false,
+                highWater:null,lowWater:null,
+                addedAt:"TP1",inst:rInstrument.current,
+              };
+              setTrade2({...rTrade2.current});
+              setStatus(`+ TP1 ADD ${dir2} @ ${entry2} · ${votes2} votes confirm`);
+            }
+          }
         }else{
           setTrade({...rTrade.current});
         }
@@ -2942,24 +3004,50 @@ function App(){
 
       {/* Trade bar + Chart — shown when running */}
       {running&&(<>
-            <div style={{flexShrink:0,minHeight:"24px"}}>
+            {/* ── 2-LINE TRADE DETAILS BAR ── */}
+            <div style={{flexShrink:0}}>
               {trade&&(
-                <div style={{display:"flex",alignItems:"center",gap:"5px",padding:"4px 8px",
-                  background:PANEL,borderRadius:"5px",
-                  borderLeft:`2px solid ${trade.dir==="BUY"?GREEN:RED}`,
-                  border:`1px solid ${trade.dir==="BUY"?GREEN+"20":RED+"20"}`}}>
-                  <span style={{fontSize:"10px",fontWeight:"700",color:trade.dir==="BUY"?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{trade.dir}</span>
-                  {trade.trailing&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>TRAIL</span>}
-                  {trade.beDone&&!trade.trailing&&<span style={{fontSize:"8px",color:BLUE,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>BE</span>}
-                  {trade.p1Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>TP1</span>}
-                  {trade.p2Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>TP2</span>}
-                  {trade.p3Done&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0,fontFamily:"'JetBrains Mono',monospace"}}>TP3</span>}
-                  <span style={{fontSize:"8px",color:DIM,fontFamily:"'JetBrains Mono',monospace",flexShrink:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",minWidth:0}}>
-                    E:{trade.entry.toFixed(2)} SL:{trade.sl.toFixed(2)} TP1:{trade.tp1.toFixed(2)} TP2:{trade.tp2?.toFixed(2)} TP3:{trade.tp3?.toFixed(2)}
-                  </span>
-                  <span style={{marginLeft:"auto",fontSize:"12px",fontWeight:"700",color:trade.pnl>=0?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>
-                    {trade.pnl>=0?"+":""}${trade.pnl.toFixed(2)}
-                  </span>
+                <div style={{
+                  background:PANEL,borderRadius:"6px",
+                  borderLeft:`3px solid ${trade.dir==="BUY"?GREEN:RED}`,
+                  border:`1px solid ${trade.dir==="BUY"?GREEN+"30":RED+"30"}`,
+                  padding:"5px 8px",fontFamily:"'JetBrains Mono',monospace",
+                  display:"flex",flexDirection:"column",gap:"3px"
+                }}>
+                  {/* LINE 1: Direction · Entry · SL · Trail/BE status · P&L */}
+                  <div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"nowrap",overflow:"hidden"}}>
+                    <span style={{fontSize:"10px",fontWeight:"700",color:trade.dir==="BUY"?GREEN:RED,flexShrink:0}}>
+                      {trade.dir}
+                    </span>
+                    <span style={{fontSize:"9px",color:TEXT,flexShrink:0}}>@{trade.entry.toFixed(2)}</span>
+                    <span style={{fontSize:"8px",color:DIM,flexShrink:0}}>SL:{trade.sl.toFixed(2)}</span>
+                    <span style={{fontSize:"8px",color:DIM,flexShrink:0}}>slD:{trade.slD?.toFixed(2)}</span>
+                    {trade.trailing&&<span style={{fontSize:"8px",color:GOLD,fontWeight:"700",flexShrink:0}}>TRAIL</span>}
+                    {trade.beDone&&!trade.trailing&&<span style={{fontSize:"8px",color:BLUE,fontWeight:"700",flexShrink:0}}>BE</span>}
+                    {trade.p1Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP1✓</span>}
+                    {trade.p2Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP2✓</span>}
+                    {trade.p3Done&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0}}>TP3✓</span>}
+                    <span style={{marginLeft:"auto",fontSize:"12px",fontWeight:"700",flexShrink:0,
+                      color:trade.pnl>=0?GREEN:RED}}>
+                      {trade.pnl>=0?"+":""}${trade.pnl.toFixed(2)}
+                    </span>
+                  </div>
+                  {/* LINE 2: TP levels · Lots · Spread · Risk · Strength · ATR */}
+                  <div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"nowrap",overflow:"hidden"}}>
+                    <span style={{fontSize:"8px",color:"#4CAF50",flexShrink:0}}>TP1:{trade.tp1.toFixed(2)}</span>
+                    <span style={{fontSize:"8px",color:"#66BB6A",flexShrink:0}}>TP2:{trade.tp2?.toFixed(2)??'—'}</span>
+                    <span style={{fontSize:"8px",color:"#81C784",flexShrink:0}}>TP3:{trade.tp3?.toFixed(2)??'—'}</span>
+                    <span style={{fontSize:"8px",color:DIM,flexShrink:0}}>|</span>
+                    <span style={{fontSize:"8px",color:MUTED,flexShrink:0}}>Lots:{trade.lots}</span>
+                    <span style={{fontSize:"8px",color:MUTED,flexShrink:0}}>SPD:{liveSpread.toFixed(2)}</span>
+                    {trade.riskDollars!=null&&<span style={{fontSize:"8px",color:MUTED,flexShrink:0}}>R:${trade.riskDollars.toFixed(2)}</span>}
+                    {trade.riskPct!=null&&<span style={{fontSize:"8px",color:MUTED,flexShrink:0}}>{Math.round((trade.riskPct||0)*100)}%</span>}
+                    <span style={{fontSize:"8px",color:DIM,flexShrink:0}}>|</span>
+                    {trade.strength!=null&&<span style={{fontSize:"8px",color:PURPLE,flexShrink:0}}>STR:{trade.strength}%</span>}
+                    <span style={{fontSize:"8px",color:DIM,flexShrink:0,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",minWidth:0}}>
+                      {trade.confirms}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
