@@ -1037,42 +1037,49 @@ function manageTrade(t, price, atr, liveProvider, pip=10){
   }
 
   // ── TRAILING STOP LOGIC ──────────────────────────────────────────
-  // Activation : price moves 50% of original SL distance from entry
-  // Step 1 BE  : on activation SL snaps to entry (Break Even) immediately
-  // Step 2 Trail: SL follows price maintaining a 40% gap of the
-  //               entry→currentPrice move (ratchet — only moves in profit dir)
-  //   BUY  trailSL = price − (price − entry) × 0.40
-  //   SELL trailSL = price + (entry − price) × 0.40
-  // SL never moves against the trade (ratchet).
+  // Activation : price must reach EXACTLY 50% of entry→TP1 distance
+  //   BUY  activation price = entry + (tp1 - entry) × 0.50
+  //   SELL activation price = entry - (entry - tp1) × 0.50
+  //
+  // Example: BUY @4700, SL @4680, TP1 @4750
+  //   activationPrice = 4700 + (4750-4700)×0.50 = 4725.00
+  //   Trail does NOT fire before 4725.00
+  //
+  // On activation:
+  //   Step 1 — SL snaps immediately to entry (Break Even)
+  //   Step 2 — SL follows price maintaining 40% gap from entry→price move
+  //     BUY  trailSL = price − (price − entry) × 0.40
+  //     SELL trailSL = price + (entry − price) × 0.40
+  //   Ratchet — SL only ever moves in the profit direction, never back.
 
-  const slD=tr.slD||Math.abs(tr.entry-tr.sl)||2.0;
-  const activationDist=slD*0.50;   // 50% of original SL distance
+  // Activation distance = 50% of entry→TP1 distance
+  const tp1Dist = tr.tp1 != null ? Math.abs(tr.tp1 - tr.entry) : (tr.slD||Math.abs(tr.entry-tr.sl)||2.0)*1.5;
+  const activationDist = tp1Dist * 0.50; // 50% of the way to TP1
 
   if(tr.dir==="BUY"){
-    const moved=price-tr.entry;
-    if(moved>=activationDist){
-      tr.trailing=true;
-      // BE floor — always guaranteed once trail active
-      const beFloor=tr.entry;
-      // Trail gap = 40% of total move from entry to current price
-      const trailGap=Math.max((price-tr.entry)*0.40, 0.01);
-      const newSL=+(price-trailGap).toFixed(2);
-      // Ratchet: only ever move SL upward (toward profit)
-      const candidate=Math.max(newSL, beFloor);
-      if(candidate>tr.sl) tr.sl=candidate;
-      // Snap to BE immediately on first activation if not already there
-      else if(tr.sl<beFloor) tr.sl=beFloor;
+    const moved = price - tr.entry;
+    if(moved >= activationDist){
+      tr.trailing = true;
+      const beFloor = tr.entry;
+      // 40% gap = 40% of total move from entry to current price
+      const trailGap = Math.max((price - tr.entry) * 0.40, 0.01);
+      const newSL = +(price - trailGap).toFixed(2);
+      // Ratchet: only move SL upward
+      const candidate = Math.max(newSL, beFloor);
+      if(candidate > tr.sl) tr.sl = candidate;
+      else if(tr.sl < beFloor) tr.sl = beFloor; // snap to BE on first activation
     }
   }else{
-    const moved=tr.entry-price;
-    if(moved>=activationDist){
-      tr.trailing=true;
-      const beFloor=tr.entry;
-      const trailGap=Math.max((tr.entry-price)*0.40, 0.01);
-      const newSL=+(price+trailGap).toFixed(2);
-      const candidate=Math.min(newSL, beFloor);
-      if(candidate<tr.sl) tr.sl=candidate;
-      else if(tr.sl>beFloor) tr.sl=beFloor;
+    const moved = tr.entry - price;
+    if(moved >= activationDist){
+      tr.trailing = true;
+      const beFloor = tr.entry;
+      const trailGap = Math.max((tr.entry - price) * 0.40, 0.01);
+      const newSL = +(price + trailGap).toFixed(2);
+      // Ratchet: only move SL downward
+      const candidate = Math.min(newSL, beFloor);
+      if(candidate < tr.sl) tr.sl = candidate;
+      else if(tr.sl > beFloor) tr.sl = beFloor; // snap to BE on first activation
     }
   }
 
