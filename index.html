@@ -1204,6 +1204,7 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
     // ── Resize canvas to match container (DPR-aware for crisp rendering) ──
     let W=container.clientWidth, H=height;
     let _rzTimer;
+    let _dirty=true; // declared here so resize() can set it safely
     const resize=()=>{
       const dpr=window.devicePixelRatio||1;
       W=container.clientWidth;
@@ -1245,7 +1246,7 @@ function Chart({candles,trade,livePrice,height=320,replayIdx=null,rLiveCandles=n
     // ▸ Live mode          = NEVER skip frames (tick arrives < 1s on XAUUSD)
     // ▸ Backtest mode      = skip if dirty===false AND < 16ms since last draw
     const _ctx2d = canvas.getContext('2d', {alpha:false, desynchronized:true});
-    let _lastDrawTs = 0, _dirty = true;
+    let _lastDrawTs = 0;
     canvas.__markDirty = () => { _dirty = true; };
 
     function draw(ts){
@@ -2368,6 +2369,7 @@ function App(){
   // ══════════════════════════════════════════════════════════════
 
   const startForwardTest=useCallback(()=>{
+    try{
     if(liveFeedRef.current){liveFeedRef.current.close();liveFeedRef.current=null;}
     resetAllState(rStartBal.current);
     rRunning.current=true;
@@ -2476,6 +2478,7 @@ function App(){
     };
     prefetch();
     return()=>{cancelled=true;};
+    }catch(e){setStatus("❌ Start error: "+e.message);setRunning(false);}
   },[liveProvider]);
 
   const connectLiveFeed=useCallback(()=>{
@@ -3366,7 +3369,23 @@ function App(){
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+class ErrorBoundary extends React.Component {
+  constructor(props){super(props);this.state={err:null};}
+  static getDerivedStateFromError(e){return{err:e};}
+  render(){
+    if(this.state.err){
+      return React.createElement('div',{style:{padding:'24px',color:'#f03858',fontFamily:'monospace',fontSize:'12px',background:'#0a0a0e',minHeight:'100vh'}},
+        React.createElement('div',{style:{marginBottom:'8px',fontSize:'16px',fontWeight:'700'}},'⚠ App Error'),
+        React.createElement('pre',{style:{whiteSpace:'pre-wrap',wordBreak:'break-all'}},String(this.state.err?.message||this.state.err))
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  React.createElement(ErrorBoundary,null,React.createElement(App))
+);
 // Hide boot after React has painted at least one frame
 requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(hideBoot,200)));
 // Fallback: force-hide after 6s no matter what
