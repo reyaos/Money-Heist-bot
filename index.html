@@ -1713,7 +1713,7 @@ function App(){
   const [log,setLog]=useState([]);
   const [stats,setStats]=useState({w:0,l:0,pnl:0,tp3:0,total:0});
   const [phase,setPhase]=useState("STANDBY");
-  const [status,setStatus]=useState("Connecting to live feed...");
+  const [status,setStatus]=useState("Press ▶ Live to connect");
   const [livePrice,setLivePrice]=useState(0);
   const [priceSource,setPriceSource]=useState(null);
   const [lastFetchTs,setLastFetchTs]=useState(null);
@@ -1812,13 +1812,6 @@ function App(){
     const iv=setInterval(()=>{rSessionSecs.current++;setSessionSecs(rSessionSecs.current);},1000);
     return()=>clearInterval(iv);
   },[sessionRunning]);
-
-  // Auto-start live feed on mount
-  useEffect(()=>{
-    const t=setTimeout(()=>startForwardTest(),300);
-    return()=>clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[]);
 
   const pushLog=useCallback(e=>{
     rLog.current=[e,...rLog.current].slice(0,500);setLog([...rLog.current]);
@@ -2622,7 +2615,7 @@ function App(){
   const stopForwardTest=useCallback(()=>{
     setRunning(false);setSessionRunning(false);
     if(liveFeedRef.current){liveFeedRef.current.close();liveFeedRef.current=null;}
-    setLiveStatus("");setStatus("Forward test stopped");
+    setLiveStatus("");setStatus("Feed stopped.");
   },[]);
 
   // Cleanup on unmount
@@ -2880,41 +2873,56 @@ function App(){
         /* Chart tab — fixed layout, chart never shifts */
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"6px 10px",gap:"4px"}}>
 
-          {/* Forward test status */}
+          {/* Live feed status bar */}
           <div style={{flexShrink:0,background:PANEL,borderRadius:"6px",border:`1px solid ${running?RED+"40":BORDER}`,padding:"6px 10px",display:"flex",gap:"8px",alignItems:"center"}}>
             <span style={{fontSize:"8px",color:running?RED:DIM,animation:running?"blink 1.5s infinite":"none"}}>●</span>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:"9px",color:running?RED:DIM,fontWeight:"600",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{liveStatus||"Live feed inactive"}</div>
+              <div style={{fontSize:"9px",color:running?RED:DIM,fontWeight:"600",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{liveStatus||(running?"Connecting...":"Live feed inactive")}</div>
             </div>
             <div style={{fontSize:"8px",color:GREEN,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,fontWeight:"700"}}>DERIV ✅</div>
           </div>
 
-          {/* Trade bars — fixed height containers so chart never shifts */}
-          <div style={{flexShrink:0,minHeight:"22px"}}>
-            {trade&&(
-              <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"3px 8px",
-                background:PANEL,borderRadius:"5px",borderLeft:`2px solid ${trade.dir==="BUY"?GREEN:RED}`,
-                border:`1px solid ${trade.dir==="BUY"?GREEN+"20":RED+"20"}`}}>
-                <span style={{fontSize:"10px",fontWeight:"700",color:trade.dir==="BUY"?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{trade.dir}</span>
-                {trade.trailing&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0}}>TRAIL●</span>}
-                {trade.beDone&&!trade.trailing&&<span style={{fontSize:"8px",color:BLUE,flexShrink:0}}>BE✓</span>}
-                {trade.p1Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP1✓</span>}
-                {trade.p2Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP2✓</span>}
-                {trade.p3Done&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0}}>TP3🏆</span>}
-                <span style={{fontSize:"8px",color:DIM,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,overflow:"hidden",whiteSpace:"nowrap"}}>
-                  E:{trade.entry.toFixed(2)} SL:{trade.sl.toFixed(2)} TP1:{trade.tp1.toFixed(2)}
-                </span>
-                <span style={{marginLeft:"auto",fontSize:"12px",fontWeight:"700",color:trade.pnl>=0?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>
-                  {trade.pnl>=0?"+":""}${trade.pnl.toFixed(2)}
-                </span>
-              </div>
-            )}
-          </div>
+          {/* START button — shown when not running */}
+          {!running&&(
+            <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"16px"}}>
+              <div style={{fontSize:"40px"}}>💰</div>
+              <div style={{fontSize:"14px",fontWeight:"700",color:GOLD,letterSpacing:"1px"}}>MONEY HEIST v10</div>
+              <div style={{fontSize:"10px",color:DIM}}>XAU/USD · Live Paper Trading</div>
+              <button onClick={startForwardTest}
+                style={{marginTop:"8px",padding:"16px 48px",borderRadius:"12px",background:RED,
+                  border:"none",color:"#fff",fontSize:"16px",fontWeight:"700",cursor:"pointer",
+                  boxShadow:`0 0 24px ${RED}66`,letterSpacing:"1px"}}>
+                ▶ START LIVE
+              </button>
+            </div>
+          )}
 
-          {/* Chart — fills all remaining space */}
-          <div style={{flex:1,minHeight:0}}>
-            <MemoChart candles={candles} trade={trade} livePrice={livePrice} height={360} replayIdx={null} rLiveCandles={rLiveCandles}/>
-          </div>
+          {/* Trade bar + Chart — shown when running */}
+          {running&&(<>
+            <div style={{flexShrink:0,minHeight:"22px"}}>
+              {trade&&(
+                <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"3px 8px",
+                  background:PANEL,borderRadius:"5px",borderLeft:`2px solid ${trade.dir==="BUY"?GREEN:RED}`,
+                  border:`1px solid ${trade.dir==="BUY"?GREEN+"20":RED+"20"}`}}>
+                  <span style={{fontSize:"10px",fontWeight:"700",color:trade.dir==="BUY"?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{trade.dir}</span>
+                  {trade.trailing&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0}}>TRAIL●</span>}
+                  {trade.beDone&&!trade.trailing&&<span style={{fontSize:"8px",color:BLUE,flexShrink:0}}>BE✓</span>}
+                  {trade.p1Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP1✓</span>}
+                  {trade.p2Done&&<span style={{fontSize:"8px",color:GREEN,flexShrink:0}}>TP2✓</span>}
+                  {trade.p3Done&&<span style={{fontSize:"8px",color:GOLD,flexShrink:0}}>TP3🏆</span>}
+                  <span style={{fontSize:"8px",color:DIM,fontFamily:"'JetBrains Mono',monospace",flexShrink:0,overflow:"hidden",whiteSpace:"nowrap"}}>
+                    E:{trade.entry.toFixed(2)} SL:{trade.sl.toFixed(2)} TP1:{trade.tp1.toFixed(2)}
+                  </span>
+                  <span style={{marginLeft:"auto",fontSize:"12px",fontWeight:"700",color:trade.pnl>=0?GREEN:RED,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>
+                    {trade.pnl>=0?"+":""}${trade.pnl.toFixed(2)}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div style={{flex:1,minHeight:0}}>
+              <MemoChart candles={candles} trade={trade} livePrice={livePrice} height={360} replayIdx={null} rLiveCandles={rLiveCandles}/>
+            </div>
+          </>)}
         </div>
       ):(
       <div style={{flex:1,overflowY:"auto",overflowX:"hidden",padding:"10px 14px",display:"flex",flexDirection:"column",gap:"10px",overscrollBehaviorX:"none"}}>
@@ -3359,7 +3367,10 @@ function App(){
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
-setTimeout(hideBoot,300);
+// Hide boot after React has painted at least one frame
+requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(hideBoot,200)));
+// Fallback: force-hide after 6s no matter what
+setTimeout(hideBoot,6000);
 </script>
 </body>
 </html>
